@@ -1,6 +1,8 @@
 import os
 import json
 import logging
+from threading import Thread
+from flask import Flask
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 from openai import OpenAI
@@ -31,6 +33,18 @@ BASE_SYSTEM_PROMPT = (
     "Keep your responses structured and actionable. Adapt to your boss's preferences, tech stack, "
     "and daily habits over time based on the provided profile context."
 )
+
+# Create a dummy web server to satisfy Render's port check for Free Web Services
+app = Flask('')
+
+@app.route('/')
+def home():
+    return "Hermes Agent is alive and running!"
+
+def run_web_server():
+    # Render automatically provides a PORT environment variable
+    port = int(os.environ.get("PORT", 8080))
+    app.run(host='0.0.0.0', port=port)
 
 # Helper function to load data from Supabase
 def load_user_memory(user_id: int):
@@ -76,8 +90,9 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     }).execute()
     
     await update.message.reply_text(
-        "হ্যালো বস! আমি আপনার মেমোরি-আপগ্রেডেড পার্সোনাল অ্যাসিস্ট্যান্ট Hermes। "
-        "এখন থেকে আমাদের সব কথোপকথন এবং আপনার কাজের অভ্যাস আমি মনে রাখব। আজ কী নিয়ে কাজ করছেন?"
+        "Hello Boss! I am Hermes, your memory-upgraded personal AI assistant. "
+        "From now on, I will securely remember our conversations, your projects, and daily routines. "
+        "What are we working on today?"
     )
 
 # Command handler to clear conversational context but keep profile info
@@ -86,7 +101,9 @@ async def clear_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
     memory = load_user_memory(user_id)
     if memory:
         save_user_memory(user_id, [], json.loads(memory["boss_profile"]))
-        await update.message.reply_text("চ্যাট হিস্ট্রি পরিষ্কার করা হয়েছে, তবে আপনার প্রোফাইল ও অভ্যাসগুলো আমার মনে আছে, বস!")
+        await update.message.reply_text(
+            "Chat history has been cleared, Boss! However, I still retain your profile details and habits."
+        )
 
 # Main message processor
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -96,83 +113,4 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Show typing indicator in Telegram
     await context.bot.send_chat_action(chat_id=update.effective_chat.id, action="typing")
     
-    # Fetch long-term memory from database
-    memory = load_user_memory(user_id)
-    if not memory:
-        await update.message.reply_text("মেমোরি লোড করতে সমস্যা হয়েছে। দয়া করে আবার চেষ্টা করুন।")
-        return
-
-    # Parse JSON strings from database
-    chat_history = json.loads(memory["chat_history"])
-    boss_profile = json.loads(memory["boss_profile"])
-    system_prompt = memory["system_prompt"]
-    
-    # Construct an enriched system prompt injected with the user's saved profile
-    enriched_system_prompt = (
-        f"{system_prompt}\n\n"
-        f"CURRENT BOSS PROFILE (Use this to adapt your intelligence and responses over time):\n"
-        f"- Tech Stack/Projects: {boss_profile.get('tech_stack', [])}\n"
-        f"- Core Habits/Routines: {boss_profile.get('habits', [])}\n"
-        f"- Direct Preferences: {boss_profile.get('preferences', {})}\n"
-        f"If the user shares new habits, stack updates, or preferences, implicitly update your knowledge "
-        f"and acknowledge it professionally in your demeanor."
-    )
-    
-    # Prepare messages payload for OpenRouter API
-    api_messages = [{"role": "system", "content": enriched_system_prompt}]
-    
-    # Append past chat history (Keep last 10 messages to optimize context token limit)
-    for msg in chat_history[-10:]:
-        api_messages.append(msg)
-        
-    # Append the current incoming message
-    api_messages.append({"role": "user", "content": user_text})
-    
-    try:
-        # Request response from OpenRouter Hermes 3
-        response = ai_client.chat.completions.create(
-            model="nousresearch/hermes-3-llama-3.1-405b:free",
-            messages=api_messages
-        )
-        
-        bot_response = response.choices[0].message.content
-        
-        # Internal Agent Layer: Update the boss profile if Hermes detects new meta-data
-        lower_text = user_text.lower()
-        if "project" in lower_text or "learning" in lower_text or "using" in lower_text:
-            for tech in ["next.js", "react", "python", "javascript", "supabase", "tailwind", "css", "html"]:
-                if tech in lower_text and tech not in boss_profile["tech_stack"]:
-                    boss_profile["tech_stack"].append(tech)
-                    
-        if "usually" in lower_text or "every day" in lower_text or "habit" in lower_text or "at night" in lower_text:
-            if user_text not in boss_profile["habits"]:
-                boss_profile["habits"].append(user_text)
-
-        # Append current exchange to conversational history
-        chat_history.append({"role": "user", "content": user_text})
-        chat_history.append({"role": "assistant", "content": bot_response})
-        
-        # Save updated conversation and learned habits back to Supabase
-        save_user_memory(user_id, chat_history, boss_profile)
-        
-        # Send final reply back to user on Telegram
-        await update.message.reply_text(bot_response)
-        
-    except Exception as e:
-        logging.error(f"API or processing error: {e}")
-        await update.message.reply_text("দুঃখিত বস, রিকোয়েস্ট প্রসেস করতে সাময়িক সমস্যা হচ্ছে।")
-
-def main():
-    # Build Telegram bot application
-    application = Application.builder().token(TELEGRAM_TOKEN).build()
-
-    # Register handlers
-    application.add_handler(CommandHandler("start", start))
-    application.add_handler(CommandHandler("clear", clear_chat))
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-
-    # Run the bot server via polling mechanism
-    application.run_polling()
-
-if __name__ == '__main__':
-    main()
+    # Fetch long-term memory from
